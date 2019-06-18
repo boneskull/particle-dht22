@@ -9,13 +9,13 @@ SYSTEM_MODE(AUTOMATIC);
 #define PUBLISH_NAMESPACE "worm"
 #define PUBLISH_DEVICE_NAME "mindflayer"
 
-#define FIRMWARE_VERSION 1
+#define FIRMWARE_VERSION 2
 
 DHT dht(DHT_PIN, DHT_TYPE);
 
 struct Config {
   uint8_t version;
-  uint16_t delayMs;
+  int delayMs;
   bool enabled;
   bool deepSleep;
 };
@@ -37,7 +37,7 @@ void setup() {
   Serial.begin(152000);
   EEPROM.get(0, config);
   if (config.version != FIRMWARE_VERSION) {
-    Config defaultConfig = {FIRMWARE_VERSION, 900000, true, true};
+    Config defaultConfig = {FIRMWARE_VERSION, 900000, true, false};
     config = defaultConfig;
     saveConfig();
   } else {
@@ -52,16 +52,10 @@ void setup() {
   Particle.variable("config", configJson);
 
   dht.begin();
+  delay(3000);
 }
 
 void loop() {
-  if (config.deepSleep) {
-    // D1 is just a placeholder
-    System.sleep({D1}, RISING, config.delayMs / 1000);
-  } else {
-    delay(config.delayMs);
-  }
-
   if (config.enabled) {
     // Reading temperature or humidity takes about 250 milliseconds!
     // Sensor readings may also be up to 2 seconds 'old' (its a
@@ -107,6 +101,13 @@ void loop() {
     Serial.print(hi);
     Serial.println("*C");
     Serial.println(Time.timeStr());
+  }
+
+  if (config.deepSleep) {
+    // D1 is just a placeholder
+    System.sleep({D1}, RISING, config.delayMs / 1000);
+  } else {
+    delay(config.delayMs);
   }
 }
 

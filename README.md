@@ -18,8 +18,8 @@ Yes, this again.
 
 - `settings` - `{String}`: All settings in a JSON object. Properties:
   - `enabled` - `{bool}` (default `true`): Enabled or not
-  - `deepSleep` - `{bool}` (default `true`): Deep sleep enabled or not
-  - `delay` - `{short}` (default `900000`; 30 minutes): Current delay setting
+  - `deepSleep` - `{bool}` (default `false`): Deep sleep enabled or not
+  - `delay` - `{short}` (default `900000`; 15 minutes): Delay between reads in milliseconds
 
 ## Notes
 
