@@ -1,3 +1,4 @@
+
 #include "ArduinoJson.h"
 #include "Adafruit_DHT.h"
 #include "Particle.h"
@@ -8,41 +9,47 @@ SYSTEM_MODE(AUTOMATIC);
 #define DHT_TYPE 22
 #define PUBLISH_NAMESPACE "worm"
 #define PUBLISH_DEVICE_NAME "mindflayer"
-
-#define FIRMWARE_VERSION 2
-
-DHT dht(DHT_PIN, DHT_TYPE);
+#define DEFAULT_DELAY 900000
+#define DEFAULT_ENABLE true
+#define DEFAULT_DEEP_SLEEP false
+#define FIRMWARE_VERSION 5
+#define FIRMWARE_NAME "particle-dht22"
+#define STARTUP_DELAY 3000
 
 struct Config {
   uint8_t version;
-  int delayMs;
+  unsigned int delayMs;
   bool enabled;
   bool deepSleep;
 };
 
 size_t serializeConfig();
 void saveConfig();
+void firmwareCheck();
+void resetConfig();
 int enable(String ignored);
 int disable(String ignored);
 int enableDeepSleep(String ignored);
 int disableDeepSleep(String ignored);
 int setDelay(String ms);
 void publish(String topic, String data);
+void readDHT();
 
+Config defaultConfig = {FIRMWARE_VERSION, DEFAULT_DELAY, DEFAULT_ENABLE,
+                        DEFAULT_DEEP_SLEEP};
 Config config;
 DynamicJsonDocument doc(JSON_OBJECT_SIZE(3));
 char configJson[128];
+DHT dht(DHT_PIN, DHT_TYPE);
+
+SerialLogHandler logHandler(LOG_LEVEL_WARN, {{"app", LOG_LEVEL_ALL}});
+
+unsigned long prevMillis = 0;
 
 void setup() {
-  Serial.begin(152000);
-  EEPROM.get(0, config);
-  if (config.version != FIRMWARE_VERSION) {
-    Config defaultConfig = {FIRMWARE_VERSION, 900000, true, false};
-    config = defaultConfig;
-    saveConfig();
-  } else {
-    serializeConfig();
-  }
+  Log.info("%s on Device OS v%s", FIRMWARE_NAME, System.version().c_str());
+
+  firmwareCheck();
 
   Particle.function("enable", enable);
   Particle.function("disable", disable);
@@ -51,64 +58,62 @@ void setup() {
   Particle.function("setDelay", setDelay);
   Particle.variable("config", configJson);
 
+  Log.info("Config: %s", configJson);
   dht.begin();
-  delay(3000);
+  Log.trace("Performing initial read");
+  delay(STARTUP_DELAY);
+
+  readDHT();
+  prevMillis = millis();
 }
 
 void loop() {
   if (config.enabled) {
-    // Reading temperature or humidity takes about 250 milliseconds!
-    // Sensor readings may also be up to 2 seconds 'old' (its a
-    // very slow sensor)
-    float h = dht.getHumidity();
-    // Read temperature as Celsius
-    float t = dht.getTempCelcius();
-    // Read temperature as Farenheit
-    float f = dht.getTempFarenheit();
-
-    // Check if any reads failed and exit early (to try again).
-    if (isnan(h) || isnan(t) || isnan(f)) {
-      publish("error", "Could not read from DHT sensor");
-      Serial.println("Failed to read from DHT sensor!");
-      return;
+    if (config.deepSleep) {
+      Log.info("Sleeping for %dms", config.delayMs);
+      System.sleep({D1}, RISING, config.delayMs / 1000);
+      readDHT();
+    } else {
+      unsigned long currentMillis = millis();
+      if (currentMillis - prevMillis >= config.delayMs) {
+        readDHT();
+        prevMillis = currentMillis;
+      }
     }
-
-    // Compute heat index
-    // Must send in temp in Fahrenheit!
-    float hi = dht.getHeatIndex();
-    float dp = dht.getDewPoint();
-    float k = dht.getTempKelvin();
-
-    publish("humidity", String::format("%.2f", h));
-    publish("temperature", String::format("%.2f", f));
-    publish("dew_point", String::format("%.2f", dp));
-    publish("heat_index", String::format("%.2f", hi));
-
-    Serial.print("Humid: ");
-    Serial.print(h);
-    Serial.print("% - ");
-    Serial.print("Temp: ");
-    Serial.print(t);
-    Serial.print("*C ");
-    Serial.print(f);
-    Serial.print("*F ");
-    Serial.print(k);
-    Serial.print("*K - ");
-    Serial.print("DewP: ");
-    Serial.print(dp);
-    Serial.print("*C - ");
-    Serial.print("HeatI: ");
-    Serial.print(hi);
-    Serial.println("*C");
-    Serial.println(Time.timeStr());
+  } else if (config.deepSleep) {
+    Log.warn("Call setEnabled() to enable deep sleep");
+    publish("warning", "Call setEnabled() to enable deep sleep");
   }
+}
 
-  if (config.deepSleep) {
-    // D1 is just a placeholder
-    System.sleep({D1}, RISING, config.delayMs / 1000);
+void readDHT() {
+  float h = dht.getHumidity();
+  float t = dht.getTempCelcius();
+  float f = dht.getTempFarenheit();
+  float k = dht.getTempKelvin();
+  float dp = dht.getDewPoint();
+
+  Log.info("Humid: %.2f%% - Temp: %.2f*C / %.2f*F / %.2f*K - DewP: %.2f*C", h,
+           t, f, k, dp);
+
+  publish("humidity", String::format("%.2f", h));
+  publish("temperature", String::format("%.2f", f));
+  publish("dew_point", String::format("%.2f", dp));
+}
+
+void firmwareCheck() {
+  EEPROM.get(0, config);
+  if (config.version == FIRMWARE_VERSION) {
+    serializeConfig();
   } else {
-    delay(config.delayMs);
+    resetConfig();
   }
+}
+
+void resetConfig() {
+  Log.warn("Firmware out of date; resetting config");
+  config = defaultConfig;
+  saveConfig();
 }
 
 size_t serializeConfig() {
@@ -125,10 +130,18 @@ void saveConfig() {
 }
 
 int setDelay(String value) {
-  uint8_t delayMs = value.toInt();
-  if (delayMs > 0 && delayMs != config.delayMs) {
+  unsigned int delayMs = value.toInt();
+  if (delayMs == 0) {
+    Log.warn("setDelay() called with non-integer or non-positive value: %s",
+             value.c_str());
+    publish("error",
+            String::format(
+                "setDelay() called with non-integer or non-positive value: %s",
+                value.c_str()));
+    return 0;
+  }
+  if (delayMs != config.delayMs) {
     config.delayMs = delayMs;
-    saveConfig();
     return 1;
   }
   return 0;
@@ -137,7 +150,6 @@ int setDelay(String value) {
 int enable(String ignored = "") {
   if (!config.enabled) {
     config.enabled = true;
-    saveConfig();
     return 1;
   }
   return 0;
@@ -146,7 +158,6 @@ int enable(String ignored = "") {
 int disable(String ignored = "") {
   if (config.enabled) {
     config.enabled = false;
-    saveConfig();
     return 1;
   }
   return 0;
@@ -155,7 +166,6 @@ int disable(String ignored = "") {
 int enableDeepSleep(String ignored = "") {
   if (!config.deepSleep) {
     config.deepSleep = true;
-    saveConfig();
     return 1;
   }
   return 0;
@@ -164,14 +174,14 @@ int enableDeepSleep(String ignored = "") {
 int disableDeepSleep(String ignored = "") {
   if (config.deepSleep) {
     config.deepSleep = false;
-    saveConfig();
     return 1;
   }
   return 0;
 }
 
 void publish(String topic, String data) {
-  Particle.publish(String(PUBLISH_NAMESPACE) + "/" +
-                       String(PUBLISH_DEVICE_NAME) + "/" + topic,
-                   data, PRIVATE);
+  String fullTopic = String(PUBLISH_NAMESPACE) + "/" +
+                     String(PUBLISH_DEVICE_NAME) + "/" + topic;
+  Log.trace("PUBLISH <%s>: %s", fullTopic.c_str(), data.c_str());
+  Particle.publish(fullTopic, data, PRIVATE);
 }
