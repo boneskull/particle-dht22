@@ -30,4 +30,4 @@ Yes, this again.
 
 ## License
 
-Copyright © 2019 Christopher Hiller. Licensed Apache-2.0
+Copyright © 2019 Christopher Hiller. Licensed MIT
